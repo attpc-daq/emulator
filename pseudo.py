@@ -1,11 +1,17 @@
 # -*- coding:utf-8 -*-
+import argparse
+from sitcpy.rbcp_server import DataGenerator, SessionThreadGen
+from sitcpy.cui import CuiServer
 
-from sitcpy.rbcp_server import PseudoDevice
 
-def main(args=None):
-    command_port=8001
-    data_port=8002
-    PseudoDevice(command_port,data_port).run_loop()
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--port', default=8001)
+    args = parser.parse_args()
+
+    handler = DataGenerator()
+    server = CuiServer(SessionThreadGen, handler, args.port)
+    server.start()
 
 if __name__ == "__main__":
     main()

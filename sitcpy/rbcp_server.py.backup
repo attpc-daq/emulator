@@ -24,11 +24,13 @@ from sitcpy import to_bytearray
 import sitcpy
 from sitcpy.cui import DataHandler, SessionThread, CuiServer, CommandHandler
 
+
 LOGGER = getLogger(__name__)
 HANDLER = StreamHandler()
 HANDLER.setLevel(INFO)
 LOGGER.setLevel(INFO)
 LOGGER.addHandler(HANDLER)
+
 
 class DataGenerator(DataHandler):
     """
@@ -49,16 +51,9 @@ class DataGenerator(DataHandler):
         self._locafile_index = 0
         self._local_file_path='./localfiles'
         self._locafile_list=[]
-        self._packages=[]
         if os.path.exists(self._local_file_path):
             self._locafile_list = os.listdir(self._local_file_path)
-            for file in self._locafile_list:
-                fileName = self._local_file_path+'/'+file
-                with open(fileName,'rb') as f_read:
-                    for line in f_read.readlines():
-                        self._packages.append(line.strip())
         print(str(len(self._locafile_list))+' local files found from '+self._local_file_path)
-        print(str(len(self._packages))+' packages in total')
        
     def on_start(self, session):
         """
@@ -134,11 +129,14 @@ class DataGenerator(DataHandler):
         if len(self._locafile_list) == 0:
             return self.create_data(data_unit_count)
 
-        data = self._packages[self._locafile_index]
+        fileName= self._local_file_path+'/'+self._locafile_list[self._locafile_index]
         self._locafile_index += 1
-        if(self._locafile_index >= len(self._packages)):
+        if(self._locafile_index >= len(self._locafile_list)):
             self._locafile_index =0
-        return data
+        with open(fileName,'rb') as f_read:
+            #data = bytearray(f_read.read(),'utf-8')
+            data = f_read.read()
+            return data
 
 class SessionThreadGen(SessionThread):
 
@@ -151,21 +149,15 @@ class SessionThreadGen(SessionThread):
         try:
             print("starting session from client " + str(self._client_address))
             self._data_handler.on_start(self)
-            # self._sock.setblocking(False)
-            sock_list = [self._sock]
+            write_list = [self._sock]
             self._state.transit(sitcpy.THREAD_RUNNING)
             while self._state() == sitcpy.THREAD_RUNNING:
                 data_count = self._data_handler.data_unit_count
                 try:
-                    readable, writable, _ = select.select(sock_list, sock_list, [], 0.1)
-                    for sock in writable:
-                        sock.send(self._data_handler.read_local_data(data_count))
-                        time.sleep(0.1)
-                    for sock in readable:
-                        msg = sock.recv(1024)
-                        hex_data = ''.join(['{:02x}'.format(b) for b in msg])
-                        print("device received :", hex_data)
-
+                    _, writable, _ = select.select([], write_list, [], 0.1)
+                    if self._sock in writable:
+                        self._sock.send(self._data_handler.read_local_data(data_count))
+                        time.sleep(1)
                 except (OSError, socket.error) as exc:
                     LOGGER.debug("Exception at SessionThreadGen.run : %s" %
                                  str(exc))
@@ -173,7 +165,48 @@ class SessionThreadGen(SessionThread):
                     break
 
             self._state.transit(sitcpy.THREAD_STOPPING)
-            del sock_list[:]
+            del write_list[:]
             self.close()
         finally:
             self._state.transit(sitcpy.THREAD_STOPPED)
+
+class PseudoDevice(object):
+
+    def __init__(self, command_port=8001, data_port=8002):
+
+        command_handler=CommandHandler("pdev$ ")
+        data_generator=DataGenerator()
+        self._command_server = CuiServer(SessionThread, command_handler, command_port)
+        self._data_server = CuiServer(SessionThreadGen, data_generator, data_port)
+        self._continue = True
+        self._thread = None
+
+    def stop(self):
+        self._continue = False
+        if self._thread is not None:
+            self._thread.join(2)
+        self._command_server.stop()
+        self._command_server.join()
+        self._data_server.stop()
+        self._data_server.join()
+
+    def start(self):
+        self._thread = threading.Thread(target=self.run_loop)
+        self._thread.start()
+
+    def run_loop(self):
+        self._command_server.start()
+        self._data_server.start()
+        try:
+            while self._continue:
+                time.sleep(0.5)
+                if self._command_server.is_exit():
+                    print("exiting pseudo device")
+                    break
+        except KeyboardInterrupt:
+            print("detected CTRL + C. exiting server..")
+        
+        self._data_server.stop()
+        self._data_server.join(1)
+        self._command_server.stop()
+        self._command_server.join(1)
